@@ -2,8 +2,11 @@ import fs from "fs/promises";
 import path from "path";
 import { red } from "picocolors";
 import yaml from "yaml";
+import { EnvVar } from "./env-variables";
 import { makeDir } from "./make-dir";
 import { TemplateFramework } from "./types";
+
+export const TOOL_SYSTEM_PROMPT_ENV_VAR = "TOOL_SYSTEM_PROMPT";
 
 export enum ToolType {
   LLAMAHUB = "llamahub",
@@ -17,6 +20,7 @@ export type Tool = {
   dependencies?: ToolDependencies[];
   supportedFrameworks?: Array<TemplateFramework>;
   type: ToolType;
+  envVars?: EnvVar[];
 };
 
 export type ToolDependencies = {
@@ -26,7 +30,7 @@ export type ToolDependencies = {
 
 export const supportedTools: Tool[] = [
   {
-    display: "Google Search (configuration required after installation)",
+    display: "Google Search",
     name: "google.GoogleSearchToolSpec",
     config: {
       engine:
@@ -42,6 +46,13 @@ export const supportedTools: Tool[] = [
     ],
     supportedFrameworks: ["fastapi"],
     type: ToolType.LLAMAHUB,
+    envVars: [
+      {
+        name: TOOL_SYSTEM_PROMPT_ENV_VAR,
+        description: "System prompt for google search tool.",
+        value: `You are a Google search agent. You help users to get information from Google search.`,
+      },
+    ],
   },
   {
     display: "Wikipedia",
@@ -54,6 +65,13 @@ export const supportedTools: Tool[] = [
     ],
     supportedFrameworks: ["fastapi", "express", "nextjs"],
     type: ToolType.LLAMAHUB,
+    envVars: [
+      {
+        name: TOOL_SYSTEM_PROMPT_ENV_VAR,
+        description: "System prompt for wiki tool.",
+        value: `You are a Wikipedia agent. You help users to get information from Wikipedia.`,
+      },
+    ],
   },
   {
     display: "Weather",
@@ -61,6 +79,74 @@ export const supportedTools: Tool[] = [
     dependencies: [],
     supportedFrameworks: ["fastapi", "express", "nextjs"],
     type: ToolType.LOCAL,
+    envVars: [
+      {
+        name: TOOL_SYSTEM_PROMPT_ENV_VAR,
+        description: "System prompt for weather tool.",
+        value: `You are a weather forecast agent. You help users to get the weather forecast for a given location.`,
+      },
+    ],
+  },
+  {
+    display: "Code Interpreter",
+    name: "interpreter",
+    dependencies: [
+      {
+        name: "e2b_code_interpreter",
+        version: "0.0.7",
+      },
+    ],
+    supportedFrameworks: ["fastapi", "express", "nextjs"],
+    type: ToolType.LOCAL,
+    envVars: [
+      {
+        name: "E2B_API_KEY",
+        description:
+          "E2B_API_KEY key is required to run code interpreter tool. Get it here: https://e2b.dev/docs/getting-started/api-key",
+      },
+      {
+        name: TOOL_SYSTEM_PROMPT_ENV_VAR,
+        description: "System prompt for code interpreter tool.",
+        value: `You are a Python interpreter.
+        - You are given tasks to complete and you run python code to solve them.
+        - The python code runs in a Jupyter notebook. Every time you call \`interpreter\` tool, the python code is executed in a separate cell. It's okay to make multiple calls to \`interpreter\`.
+        - Display visualizations using matplotlib or any other visualization library directly in the notebook. Shouldn't save the visualizations to a file, just return the base64 encoded data.
+        - You can install any pip package (if it exists) if you need to but the usual packages for data analysis are already preinstalled.
+        - You can run any python code you want in a secure environment.
+        - Use absolute url from result to display images or any other media.`,
+      },
+    ],
+  },
+  {
+    display: "OpenAPI action",
+    name: "openapi_action.OpenAPIActionToolSpec",
+    dependencies: [
+      {
+        name: "llama-index-tools-openapi",
+        version: "0.1.3",
+      },
+      {
+        name: "jsonschema",
+        version: "^4.22.0",
+      },
+      {
+        name: "llama-index-tools-requests",
+        version: "0.1.3",
+      },
+    ],
+    config: {
+      openapi_uri: "The URL or file path of the OpenAPI schema",
+    },
+    supportedFrameworks: ["fastapi"],
+    type: ToolType.LOCAL,
+    envVars: [
+      {
+        name: TOOL_SYSTEM_PROMPT_ENV_VAR,
+        description: "System prompt for openapi action tool.",
+        value:
+          "You are an OpenAPI action agent. You help users to make requests to the provided OpenAPI schema.",
+      },
+    ],
   },
 ];
 
@@ -87,9 +173,15 @@ export const getTools = (toolsName: string[]): Tool[] => {
   return tools;
 };
 
+export const toolRequiresConfig = (tool: Tool): boolean => {
+  const hasConfig = Object.keys(tool.config || {}).length > 0;
+  const hasEmptyEnvVar = tool.envVars?.some((envVar) => !envVar.value) ?? false;
+  return hasConfig || hasEmptyEnvVar;
+};
+
 export const toolsRequireConfig = (tools?: Tool[]): boolean => {
   if (tools) {
-    return tools?.some((tool) => Object.keys(tool.config || {}).length > 0);
+    return tools?.some(toolRequiresConfig);
   }
   return false;
 };
@@ -104,7 +196,6 @@ export const writeToolsConfig = async (
   tools: Tool[] = [],
   type: ConfigFileType = ConfigFileType.YAML,
 ) => {
-  if (tools.length === 0) return; // no tools selected, no config need
   const configContent: {
     [key in ToolType]: Record<string, any>;
   } = {
